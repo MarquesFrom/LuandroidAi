@@ -59,6 +59,7 @@ For a ready-to-install test build, download
 [`LuandroidAi-0.1.0-debug.apk`](artifacts/LuandroidAi-0.1.0-debug.apk).
 This is a debug-signed build for testing, not a production release. Android may
 ask you to allow installation from your browser or file manager.
+SHA-256: `12a76d9814c1e8fdcab5cfc966e8661c8cc84bf7e511dbc56d9167dafd3ae294`
 
 ## Scope and licensing
 
