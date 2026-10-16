@@ -11,7 +11,7 @@ object EngineUrlPolicy {
             "$label precisa usar HTTP ou HTTPS."
         }
         require(url.username.isEmpty() && url.password.isEmpty()) {
-            "Não inclua credenciais na URL de $label; use o campo de chave de API."
+            "Não inclua credenciais na URL de $label; informe apenas o endereço do servidor."
         }
         require(url.query == null && url.fragment == null) {
             "A URL de $label não pode conter parâmetros nem fragmentos."

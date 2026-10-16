@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -36,13 +38,14 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,14 +54,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.luandroid.app.data.CreateMode
-import ai.luandroid.app.data.EnginePreset
-import ai.luandroid.app.data.EngineKind
 import ai.luandroid.app.data.MediaAsset
 import java.io.File
 import java.io.ByteArrayOutputStream
@@ -91,6 +91,9 @@ private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
     val secondImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.importImage(it, 1) }
     }
+    val chatMediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { viewModel.importChatMedia(it) }
+    }
     val workflowPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
             try {
@@ -113,14 +116,21 @@ private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
             }
         }
     }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp)) {
-                Text("LU CREATE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    if (state.page == MainPage.CHAT) "LUANDROID AI" else "LU CREATE",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
                 Spacer(Modifier.height(4.dp))
-                Text("Criação visual no seu ritmo", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    if (state.page == MainPage.CHAT) "O que vamos criar hoje?" else "Criação visual no seu ritmo",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
                 Text(
                     "Gere e edite imagens. Transforme uma imagem em vídeo usando seu motor.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -183,25 +193,17 @@ private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
                         state = state,
                         onDraftChange = viewModel::setChatDraft,
                         onSend = viewModel::sendChatMessage,
+                        onPickAttachment = { chatMediaPicker.launch("*/*") },
+                        onAttachAsset = viewModel::attachGalleryAsset,
+                        onRemoveAttachment = viewModel::removeChatAttachment,
                         onConfirmAction = viewModel::confirmChatAction,
                         onDismissAction = viewModel::dismissChatAction,
                     )
                     MainPage.GALLERY -> GalleryPage(state.assets, onOpen = { openAsset(context, it) })
                     MainPage.ENGINE -> EnginePage(
                         state = state,
-                        onApplyPreset = viewModel::applyPreset,
-                        onEngineChange = viewModel::setEngine,
-                        onNameChange = viewModel::setName,
-                        onUrlChange = viewModel::setBaseUrl,
-                        onModelChange = viewModel::setModel,
-                        onApiKeyChange = viewModel::setApiKey,
-                        onChatUrlChange = viewModel::setChatBaseUrl,
-                        onChatModelChange = viewModel::setChatModel,
-                        onSearchUrlChange = viewModel::setSearchUrl,
-                        onChatApiKeyChange = viewModel::setChatApiKey,
+                        onSelectModel = viewModel::selectModel,
                         onImportWorkflow = { workflowPicker.launch("application/json") },
-                        onSave = viewModel::saveEngine,
-                        onDiscoverModels = viewModel::discoverModels,
                     )
                 }
             }
@@ -227,7 +229,7 @@ private fun CreatePage(
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ModeChip("Imagem", state.mode == CreateMode.IMAGE) { onModeChange(CreateMode.IMAGE) }
-            ModeChip("Editar", state.mode == CreateMode.EDIT) { onModeChange(CreateMode.EDIT) }
+            ModeChip("Clonar / editar", state.mode == CreateMode.EDIT) { onModeChange(CreateMode.EDIT) }
             ModeChip("Imagem → vídeo", state.mode == CreateMode.IMAGE_TO_VIDEO) {
                 onModeChange(CreateMode.IMAGE_TO_VIDEO)
             }
@@ -241,6 +243,19 @@ private fun CreatePage(
             minLines = 4,
             maxLines = 8,
         )
+        if (state.mode == CreateMode.EDIT) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Clonagem e edição por referência", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Adicione até duas imagens e descreva o que deve permanecer ou mudar. " +
+                            "O workflow ComfyUI precisa ter nós de entrada de imagem e usar os placeholders correspondentes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         repeat(2) { slot ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
@@ -265,20 +280,14 @@ private fun CreatePage(
             }
         }
 
-        val engineName = when (state.config.engine) {
-            EngineKind.OPENAI_COMPATIBLE -> state.config.name.ifBlank { "OpenAI-compatible" }
-            EngineKind.COMFYUI -> state.config.name.ifBlank { "ComfyUI" }
-        }
         Card(Modifier.fillMaxWidth().clickable(onClick = onOpenEngine)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Motor: $engineName", fontWeight = FontWeight.SemiBold)
+                Text("Imagem: ComfyUI · Chat: Ollama ${state.config.chatModel}", fontWeight = FontWeight.SemiBold)
                 Text(
                     when {
                         state.config.baseUrl.isBlank() -> "Configure um endpoint para começar."
-                        state.config.engine == EngineKind.COMFYUI && state.config.workflowJson.isBlank() ->
+                        state.config.workflowJson.isBlank() ->
                             "Falta importar um workflow ComfyUI."
-                        state.mode == CreateMode.IMAGE_TO_VIDEO && state.config.engine != EngineKind.COMFYUI ->
-                            "Imagem → vídeo requer ComfyUI e um workflow de vídeo."
                         else -> state.config.baseUrl
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -322,149 +331,46 @@ private fun CreatePage(
 @Composable
 private fun EnginePage(
     state: CreateUiState,
-    onApplyPreset: (EnginePreset) -> Unit,
-    onEngineChange: (EngineKind) -> Unit,
-    onNameChange: (String) -> Unit,
-    onUrlChange: (String) -> Unit,
-    onModelChange: (String) -> Unit,
-    onApiKeyChange: (String) -> Unit,
-    onChatUrlChange: (String) -> Unit,
-    onChatModelChange: (String) -> Unit,
-    onSearchUrlChange: (String) -> Unit,
-    onChatApiKeyChange: (String) -> Unit,
+    onSelectModel: (String) -> Unit,
     onImportWorkflow: () -> Unit,
-    onSave: () -> Unit,
-    onDiscoverModels: () -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Escolha onde a criação será processada.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Presets de motor", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        EnginePreset.entries.forEach { preset ->
+        Text("Escolha o modelo do chat e o workflow ComfyUI. A seleção fica salva automaticamente.")
+        Text("MODELO DO CHAT", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Os modelos precisam estar instalados no Ollama conectado ao app.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
-                selected = state.config.name == preset.providerName && state.config.baseUrl == preset.baseUrl,
-                onClick = { onApplyPreset(preset) },
-                label = { Text(preset.label) },
+                selected = state.config.chatModel == "qwen3:8b",
+                onClick = { onSelectModel("qwen3:8b") },
+                label = { Text("Qwen 3 · padrão") },
+            )
+            FilterChip(
+                selected = state.config.chatModel == "gemma2:2b",
+                onClick = { onSelectModel("gemma2:2b") },
+                label = { Text("Gemma 2 · 2B") },
             )
         }
-        EngineKind.entries.forEach { kind ->
-            Row(
-                Modifier.fillMaxWidth().clickable { onEngineChange(kind) }.padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = state.config.engine == kind, onClick = { onEngineChange(kind) })
-                Column {
-                    Text(if (kind == EngineKind.OPENAI_COMPATIBLE) "OpenAI-compatible" else "ComfyUI")
-                    Text(
-                        if (kind == EngineKind.OPENAI_COMPATIBLE) "Geração e edição de imagem via API" else "Imagem, edição e workflows de vídeo",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+        Text("WORKFLOW DE CRIAÇÃO · COMFYUI", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "ComfyUI já é o motor padrão para imagens, clonagem e vídeos. Selecione o arquivo JSON exportado em formato API. O workflow selecionado fica salvo automaticamente.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(onClick = onImportWorkflow, enabled = !state.busy) {
+            Text(if (state.config.workflowJson.isBlank()) "Escolher workflow ComfyUI" else "Trocar workflow")
         }
-        OutlinedTextField(
-            value = state.config.name,
-            onValueChange = onNameChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Nome do motor") },
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = state.config.baseUrl,
-            onValueChange = onUrlChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Endereço base") },
-            placeholder = {
-                Text(if (state.config.engine == EngineKind.COMFYUI) "http://192.168.1.20:8188" else "http://192.168.1.20:11434/v1")
-            },
-            supportingText = {
-                Text("No celular, use o IP acessível do servidor; 127.0.0.1 aponta para o próprio celular.")
-            },
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = state.apiKey,
-            onValueChange = onApiKeyChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("API key (opcional)") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true,
-            supportingText = { Text("Armazenada criptografada pelo Android Keystore.") },
-        )
-        Text("Chat assistente", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        OutlinedTextField(
-            value = state.config.chatBaseUrl,
-            onValueChange = onChatUrlChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Endpoint OpenAI-compatible do chat") },
-            placeholder = { Text("https://api.openai.com/v1") },
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = state.config.chatModel,
-            onValueChange = onChatModelChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Modelo de chat") },
-            placeholder = { Text("gpt-4.1-mini") },
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = state.chatApiKey,
-            onValueChange = onChatApiKeyChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("API key do chat (opcional)") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true,
-            supportingText = { Text("Se vazio, o chat reutiliza a chave do motor de imagem.") },
-        )
-        OutlinedTextField(
-            value = state.config.searchUrl,
-            onValueChange = onSearchUrlChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("URL base SearXNG para buscas (opcional)") },
-            placeholder = { Text("https://search.example.org") },
-            singleLine = true,
-            supportingText = { Text("O chat pesquisa na web quando essa instância SearXNG está configurada.") },
-        )
-        if (state.config.engine == EngineKind.OPENAI_COMPATIBLE) {
-            OutlinedTextField(
-                value = state.config.model,
-                onValueChange = onModelChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("ID do modelo de imagem") },
-                singleLine = true,
-            )
-            OutlinedButton(onClick = onDiscoverModels, enabled = !state.busy) {
-                Text(if (state.busy) "Conectando…" else "Buscar modelos")
-            }
-            state.models.forEach { model ->
-                TextButton(onClick = { onModelChange(model) }) { Text(model) }
-            }
-        } else {
-            Text(
-                "Importe um workflow no formato ComfyUI API. Placeholders aceitos: " +
-                    "{{PROMPT}}, {{IMAGE_FILENAME}}, {{IMAGE_SUBFOLDER}}, {{IMAGE_TYPE}}, " +
-                    "{{IMAGE2_FILENAME}}, {{IMAGE2_SUBFOLDER}} e {{IMAGE2_TYPE}}.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedButton(onClick = onImportWorkflow, enabled = !state.busy) {
-                Text(if (state.config.workflowJson.isBlank()) "Importar workflow JSON" else "Trocar workflow JSON")
-            }
-
-            if (state.config.workflowJson.isNotBlank()) {
-                Text("${state.config.workflowJson.length} caracteres de workflow carregados.")
-            }
-        }
-        Button(onClick = onSave, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-            Text("Salvar motor")
+        if (state.config.workflowJson.isNotBlank()) {
+            Text("Workflow carregado e pronto para usar.")
         }
         Text(
-            "HTTP sem TLS serve apenas para redes locais confiáveis. Pela internet, use HTTPS; " +
-                "credenciais e prompts em HTTP podem ser lidos por terceiros.",
+            "Para escolher outro workflow, exporte-o do ComfyUI em formato API e selecione o JSON aqui.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -477,12 +383,16 @@ private fun ChatPage(
     state: CreateUiState,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onPickAttachment: () -> Unit,
+    onAttachAsset: (MediaAsset) -> Unit,
+    onRemoveAttachment: () -> Unit,
     onConfirmAction: () -> Unit,
     onDismissAction: () -> Unit,
 ) {
+    val showGalleryPicker = remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Converse, pesquise e prepare criações. O envio ao motor sempre precisa de sua confirmação.",
+            "Chat Ollama ativo com ${state.config.chatModel}. Os modelos disponíveis são de texto; use a aba Criar para enviar imagens de referência ao workflow.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -500,6 +410,14 @@ private fun ChatPage(
                             color = MaterialTheme.colorScheme.primary,
                         )
                         Text(message.content)
+                        message.attachments.forEach { attachment ->
+                            Text(
+                                if (attachment.mimeType.startsWith("video/")) "Vídeo: ${File(attachment.path).name}"
+                                else "Imagem: ${File(attachment.path).name}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -529,9 +447,41 @@ private fun ChatPage(
             maxLines = 4,
             enabled = !state.chatBusy,
         )
+        state.chatAttachment?.let { attachment ->
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        if (attachment.mimeType.startsWith("video/")) "Vídeo: ${File(attachment.path).name}"
+                        else "Imagem: ${File(attachment.path).name}",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = onRemoveAttachment, enabled = !state.chatBusy) { Text("Remover") }
+                }
+                attachment.analysisImagePaths.firstOrNull()?.let { path -> InputImagePreview(path) }
+            }
+        }
+        OutlinedButton(
+            onClick = onPickAttachment,
+            enabled = !state.chatBusy,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("＋  Anexar imagem ou vídeo")
+        }
+        OutlinedButton(
+            onClick = { showGalleryPicker.value = true },
+            enabled = !state.chatBusy && state.assets.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Anexar uma criação da galeria")
+        }
         Button(
             onClick = onSend,
-            enabled = !state.chatBusy && state.chatDraft.isNotBlank(),
+            enabled = !state.chatBusy && (state.chatDraft.isNotBlank() || state.chatAttachment != null),
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (state.chatBusy) {
@@ -541,6 +491,41 @@ private fun ChatPage(
             } else {
                 Text("Enviar")
             }
+        }
+        if (showGalleryPicker.value) {
+            AlertDialog(
+                onDismissRequest = { showGalleryPicker.value = false },
+                title = { Text("Escolha uma criação") },
+                text = {
+                    if (state.assets.isEmpty()) {
+                        Text("Ainda não há arquivos na galeria.")
+                    } else {
+                        Column(
+                            Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            state.assets.asReversed().take(20).forEach { asset ->
+                                TextButton(
+                                    onClick = {
+                                        onAttachAsset(asset)
+                                        showGalleryPicker.value = false
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(
+                                        (if (asset.mimeType.startsWith("video/")) "Vídeo · " else "Imagem · ") +
+                                            File(asset.path).name,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showGalleryPicker.value = false }) { Text("Fechar") }
+                },
+            )
         }
     }
 }

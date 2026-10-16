@@ -1,57 +1,20 @@
 package ai.luandroid.app.data
 
 data class ProviderConfig(
-    val engine: EngineKind = EngineKind.OPENAI_COMPATIBLE,
-    val name: String = "",
-    val baseUrl: String = "",
-    val model: String = "",
-    val chatBaseUrl: String = "",
-    val chatModel: String = "",
-    val searchUrl: String = "",
+    val baseUrl: String = DEFAULT_COMFY_URL,
+    val chatBaseUrl: String = DEFAULT_OLLAMA_URL,
+    val chatModel: String = DEFAULT_OLLAMA_MODEL,
     val workflowJson: String = "",
+    val generationParametersJson: String = "",
 )
 
-enum class EngineKind { OPENAI_COMPATIBLE, COMFYUI }
+const val DEFAULT_COMFY_URL = "http://10.0.2.2:8188"
+const val DEFAULT_OLLAMA_URL = "http://10.0.2.2:11434"
+const val DEFAULT_OLLAMA_MODEL = "qwen3:8b"
+const val ALTERNATE_OLLAMA_MODEL = "gemma2:2b"
+val SUPPORTED_CHAT_MODELS = listOf(DEFAULT_OLLAMA_MODEL, ALTERNATE_OLLAMA_MODEL)
 
 enum class CreateMode { IMAGE, EDIT, IMAGE_TO_VIDEO }
-
-enum class EnginePreset(
-    val label: String,
-    val engine: EngineKind,
-    val providerName: String,
-    val baseUrl: String,
-    val model: String,
-    val chatBaseUrl: String,
-    val chatModel: String,
-) {
-    COMFYUI_LAN(
-        label = "ComfyUI — imagem e vídeo",
-        engine = EngineKind.COMFYUI,
-        providerName = "ComfyUI (servidor próprio)",
-        baseUrl = "http://192.168.1.10:8188",
-        model = "",
-        chatBaseUrl = "",
-        chatModel = "",
-    ),
-    OPENAI_IMAGES(
-        label = "OpenAI — imagem e chat",
-        engine = EngineKind.OPENAI_COMPATIBLE,
-        providerName = "OpenAI",
-        baseUrl = "https://api.openai.com/v1",
-        model = "gpt-image-1",
-        chatBaseUrl = "https://api.openai.com/v1",
-        chatModel = "gpt-4.1-mini",
-    ),
-    OPENAI_COMPATIBLE(
-        label = "Servidor OpenAI-compatible",
-        engine = EngineKind.OPENAI_COMPATIBLE,
-        providerName = "Servidor OpenAI-compatible",
-        baseUrl = "",
-        model = "",
-        chatBaseUrl = "",
-        chatModel = "",
-    ),
-}
 
 data class MediaAsset(
     val path: String,

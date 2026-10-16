@@ -11,15 +11,21 @@ class EnginePreferences(context: Context) {
         val json = preferences.getString(CONFIG, null) ?: return ProviderConfig()
         return try {
             val saved = JSONObject(json)
+            val previousChatUrl = saved.optString("chatBaseUrl")
+            val previousChatModel = saved.optString("chatModel")
             ProviderConfig(
-                engine = EngineKind.valueOf(saved.optString("engine", EngineKind.OPENAI_COMPATIBLE.name)),
-                name = saved.optString("name"),
-                baseUrl = saved.optString("baseUrl"),
-                model = saved.optString("model"),
-                chatBaseUrl = saved.optString("chatBaseUrl"),
-                chatModel = saved.optString("chatModel"),
-                searchUrl = saved.optString("searchUrl"),
+                baseUrl = saved.optString("baseUrl").takeUnless {
+                    it.isBlank() || it.contains("api.openai.com") || it.endsWith("/v1")
+                }?.let { if (it == "http://192.168.1.10:8188") DEFAULT_COMFY_URL else it }
+                    ?: DEFAULT_COMFY_URL,
+                chatBaseUrl = previousChatUrl.takeUnless {
+                    it.isBlank() || it.contains("api.openai.com") || it.endsWith("/v1")
+                } ?: DEFAULT_OLLAMA_URL,
+                chatModel = previousChatModel.takeUnless {
+                    it !in SUPPORTED_CHAT_MODELS
+                } ?: DEFAULT_OLLAMA_MODEL,
                 workflowJson = saved.optString("workflowJson"),
+                generationParametersJson = saved.optString("generationParametersJson"),
             )
         } catch (error: Exception) {
             throw IllegalStateException("Não foi possível ler as configurações salvas do motor.", error)
@@ -28,14 +34,11 @@ class EnginePreferences(context: Context) {
 
     fun save(config: ProviderConfig) {
         val json = JSONObject()
-            .put("engine", config.engine.name)
-            .put("name", config.name)
             .put("baseUrl", config.baseUrl)
-            .put("model", config.model)
             .put("chatBaseUrl", config.chatBaseUrl)
             .put("chatModel", config.chatModel)
-            .put("searchUrl", config.searchUrl)
             .put("workflowJson", config.workflowJson)
+            .put("generationParametersJson", config.generationParametersJson)
         check(preferences.edit().putString(CONFIG, json.toString()).commit()) {
             "Não foi possível salvar as configurações do motor."
         }

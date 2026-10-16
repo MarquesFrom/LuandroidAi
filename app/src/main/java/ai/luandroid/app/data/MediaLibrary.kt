@@ -1,6 +1,8 @@
 package ai.luandroid.app.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,6 +45,86 @@ class MediaLibrary(private val context: Context) {
         } catch (error: Exception) {
             output.delete()
             throw error
+        }
+    }
+
+    fun importChatMedia(uri: Uri): ChatMediaFile {
+        val mime = context.contentResolver.getType(uri)?.lowercase()
+            ?: throw IllegalArgumentException("Não foi possível identificar o tipo do arquivo.")
+        require(mime in CHAT_IMAGE_TYPES || mime in CHAT_VIDEO_TYPES) {
+            "Anexe uma imagem PNG, JPEG, WebP ou um vídeo MP4, WebM ou MOV."
+        }
+        directory.mkdirs()
+        val output = File(directory, "chat-${UUID.randomUUID()}.${extensionFor(mime)}")
+        try {
+            val source = requireNotNull(context.contentResolver.openInputStream(uri)) {
+                "Não foi possível abrir o arquivo selecionado."
+            }
+            source.use { input ->
+                output.outputStream().use { sink ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var total = 0L
+                    val limit = if (mime.startsWith("video/")) MAX_VIDEO_BYTES else MAX_INPUT_BYTES
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        require(total <= limit) {
+                            if (mime.startsWith("video/")) "Vídeos maiores que 100 MB não são compatíveis."
+                            else "Imagens maiores que 25 MB não são compatíveis."
+                        }
+                        sink.write(buffer, 0, count)
+                    }
+                }
+            }
+            val analysisImages = if (mime.startsWith("video/")) extractVideoFrames(output) else listOf(output)
+            return ChatMediaFile(output, mime, analysisImages)
+        } catch (error: Exception) {
+            output.delete()
+            throw error
+        }
+    }
+
+    fun analysisImages(file: File, mimeType: String): List<File> {
+        require(file.isFile) { "O arquivo da galeria não está mais disponível." }
+        return if (mimeType.startsWith("video/")) extractVideoFrames(file) else listOf(file)
+    }
+
+    private fun extractVideoFrames(video: File): List<File> {
+        val retriever = MediaMetadataRetriever()
+        val frames = mutableListOf<File>()
+        try {
+            retriever.setDataSource(video.absolutePath)
+            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?: throw IllegalArgumentException("Não foi possível ler a duração do vídeo.")
+            val timestamps = listOf(0L, duration / 2, (duration - 1).coerceAtLeast(0)).distinct()
+            timestamps.forEach { timestamp ->
+                val frame = retriever.getFrameAtTime(
+                    timestamp * 1_000,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                ) ?: throw IllegalArgumentException("Não foi possível extrair quadros do vídeo.")
+                val output = File(directory, "chat-frame-${UUID.randomUUID()}.jpg")
+                try {
+                    output.outputStream().use { sink ->
+                        check(frame.compress(Bitmap.CompressFormat.JPEG, 88, sink)) {
+                            "Não foi possível preparar o quadro do vídeo para análise."
+                        }
+                    }
+                    frames += output
+                } catch (error: Exception) {
+                    output.delete()
+                    throw error
+                } finally {
+                    frame.recycle()
+                }
+            }
+            return frames
+        } catch (error: Exception) {
+            frames.forEach(File::delete)
+            throw error
+        } finally {
+            retriever.release()
         }
     }
 
@@ -101,9 +183,14 @@ class MediaLibrary(private val context: Context) {
     }
 
     private companion object {
+        val CHAT_IMAGE_TYPES = setOf("image/png", "image/jpeg", "image/jpg", "image/webp")
+        val CHAT_VIDEO_TYPES = setOf("video/mp4", "video/webm", "video/quicktime")
         const val ASSETS = "assets"
         const val MAX_INPUT_BYTES = 25L * 1024 * 1024
+        const val MAX_VIDEO_BYTES = 100L * 1024 * 1024
         const val MAX_OUTPUT_BYTES = 100 * 1024 * 1024
         const val MAX_ASSETS = 100
     }
 }
+
+data class ChatMediaFile(val file: File, val mimeType: String, val analysisImages: List<File>)

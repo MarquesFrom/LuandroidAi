@@ -8,16 +8,14 @@ import ai.luandroid.app.data.CreateEngine
 import ai.luandroid.app.data.ChatAssistant
 import ai.luandroid.app.data.ChatAction
 import ai.luandroid.app.data.ChatTurn
+import ai.luandroid.app.data.ChatFile
 import ai.luandroid.app.data.CreateMode
-import ai.luandroid.app.data.EnginePreset
-import ai.luandroid.app.data.EngineKind
 import ai.luandroid.app.data.EngineUrlPolicy
 import ai.luandroid.app.data.EnginePreferences
 import ai.luandroid.app.data.MediaAsset
 import ai.luandroid.app.data.MediaLibrary
 import ai.luandroid.app.data.ProviderConfig
-import ai.luandroid.app.data.SecretStore
-import ai.luandroid.app.data.OpenAiEndpoint
+import ai.luandroid.app.data.SUPPORTED_CHAT_MODELS
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,21 +28,23 @@ import java.io.File
 
 enum class MainPage { CREATE, CHAT, GALLERY, ENGINE }
 
-data class ChatMessage(val role: String, val content: String)
+data class ChatMessage(
+    val role: String,
+    val content: String,
+    val attachments: List<ChatFile> = emptyList(),
+)
 
 data class CreateUiState(
     val page: MainPage = MainPage.CREATE,
     val config: ProviderConfig = ProviderConfig(),
-    val apiKey: String = "",
     val prompt: String = "",
     val mode: CreateMode = CreateMode.IMAGE,
     val inputImages: List<String?> = listOf(null, null),
     val assets: List<MediaAsset> = emptyList(),
-    val models: List<String> = emptyList(),
     val busy: Boolean = false,
     val chatBusy: Boolean = false,
-    val chatApiKey: String = "",
     val chatDraft: String = "",
+    val chatAttachment: ChatFile? = null,
     val chatMessages: List<ChatMessage> = emptyList(),
     val pendingChatAction: ChatAction? = null,
     val status: String? = null,
@@ -53,7 +53,6 @@ data class CreateUiState(
 
 class CreateViewModel(application: Application) : AndroidViewModel(application) {
     private val configStore = EnginePreferences(application)
-    private val secretStore = SecretStore(application)
     private val library = MediaLibrary(application)
     private val engine = CreateEngine()
     private val chatAssistant = ChatAssistant()
@@ -66,8 +65,6 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         try {
             _state.value = _state.value.copy(
                 config = configStore.load(),
-                apiKey = secretStore.load(),
-                chatApiKey = secretStore.load("chat"),
                 assets = library.load(),
             )
         } catch (error: Exception) {
@@ -75,76 +72,67 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun selectModel(model: String) {
+        require(model in SUPPORTED_CHAT_MODELS) { "Escolha Qwen3 ou Gemma 2 2B." }
+        updateConfig { it.copy(chatModel = model) }
+    }
+
     fun setPage(page: MainPage) {
         _state.value = _state.value.copy(page = page, error = null, status = null)
         if (page == MainPage.GALLERY) refreshGallery()
     }
 
-    fun setEngine(engine: EngineKind) = updateConfig { it.copy(engine = engine) }
-    fun applyPreset(preset: EnginePreset) = updateConfig {
-        it.copy(
-            engine = preset.engine,
-            name = preset.providerName,
-            baseUrl = preset.baseUrl,
-            model = preset.model,
-            chatBaseUrl = preset.chatBaseUrl.ifBlank { it.chatBaseUrl },
-            chatModel = preset.chatModel.ifBlank { it.chatModel },
-        )
-    }
-    fun setName(value: String) = updateConfig { it.copy(name = value) }
-    fun setBaseUrl(value: String) = updateConfig { it.copy(baseUrl = value) }
-    fun setModel(value: String) = updateConfig { it.copy(model = value) }
-    fun setChatBaseUrl(value: String) = updateConfig { it.copy(chatBaseUrl = value) }
-    fun setChatModel(value: String) = updateConfig { it.copy(chatModel = value) }
-    fun setSearchUrl(value: String) = updateConfig { it.copy(searchUrl = value) }
-    fun setWorkflow(value: String) = updateConfig { it.copy(workflowJson = value) }
-    fun setApiKey(value: String) { _state.value = _state.value.copy(apiKey = value, error = null) }
-    fun setChatApiKey(value: String) { _state.value = _state.value.copy(chatApiKey = value, error = null) }
+    fun setWorkflow(value: String): Boolean = updateConfig { it.copy(workflowJson = value) }
     fun setPrompt(value: String) { _state.value = _state.value.copy(prompt = value, error = null) }
     fun setMode(value: CreateMode) { _state.value = _state.value.copy(mode = value, error = null) }
     fun setChatDraft(value: String) { _state.value = _state.value.copy(chatDraft = value, error = null) }
+    fun removeChatAttachment() { _state.value = _state.value.copy(chatAttachment = null) }
 
-    fun saveEngine() {
-        if (_state.value.busy) return
+    fun importChatMedia(uri: Uri) {
         viewModelScope.launch {
             try {
-                val current = _state.value
-                validateEngine(current.config)
-                withContext(Dispatchers.IO) {
-                    secretStore.save(current.apiKey)
-                    secretStore.save(current.chatApiKey, "chat")
-                    configStore.save(current.config)
-                }
-                _state.value = _state.value.copy(status = "Motor salvo com segurança.", error = null)
+                val media = withContext(Dispatchers.IO) { library.importChatMedia(uri) }
+                _state.value = _state.value.copy(
+                    chatAttachment = ChatFile(
+                        media.file.absolutePath,
+                        media.mimeType,
+                        media.analysisImages.map(File::getAbsolutePath),
+                    ),
+                    status = if (media.mimeType.startsWith("video/")) {
+                        "Vídeo anexado. Até três quadros serão enviados ao modelo visual para análise."
+                    } else {
+                        "Imagem anexada ao chat."
+                    },
+                    error = null,
+                )
             } catch (error: Exception) {
                 report(error)
             }
         }
     }
 
-    fun discoverModels() {
-        if (_state.value.busy) return
+    fun attachGalleryAsset(asset: MediaAsset) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true, status = "Buscando modelos…", error = null)
             try {
-                val current = _state.value
-                require(current.config.engine == EngineKind.OPENAI_COMPATIBLE) {
-                    "A busca automática de modelos está disponível para endpoints OpenAI-compatible."
+                val file = File(asset.path)
+                val analysisImages = withContext(Dispatchers.IO) {
+                    library.analysisImages(file, asset.mimeType)
                 }
-                val found = withContext(Dispatchers.IO) {
-                    engine.discoverModels(current.config, current.apiKey)
-                }
-                require(found.isNotEmpty()) { "O endpoint não retornou modelos. Informe o ID manualmente." }
                 _state.value = _state.value.copy(
-                    models = found,
-                    status = "${found.size} modelo(s) encontrado(s).",
+                    chatAttachment = ChatFile(
+                        file.absolutePath,
+                        asset.mimeType,
+                        analysisImages.map(File::getAbsolutePath),
+                    ),
+                    status = if (asset.mimeType.startsWith("video/")) {
+                        "Vídeo da galeria anexado; até três quadros serão analisados."
+                    } else {
+                        "Imagem da galeria anexada ao chat."
+                    },
                     error = null,
                 )
             } catch (error: Exception) {
-                if (error is CancellationException) throw error
                 report(error)
-            } finally {
-                _state.value = _state.value.copy(busy = false)
             }
         }
     }
@@ -192,8 +180,9 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
             require(content.length <= MAX_WORKFLOW_CHARS) { "O workflow ultrapassa o limite de 2 MB." }
             val parsed = org.json.JSONObject(content)
             require(parsed.length() > 0) { "O workflow não contém nós." }
-            setWorkflow(parsed.toString(2))
-            _state.value = _state.value.copy(status = "Workflow importado.", error = null)
+            if (setWorkflow(parsed.toString(2))) {
+                _state.value = _state.value.copy(status = "Workflow importado e salvo.", error = null)
+            }
         } catch (error: Exception) {
             report(error)
         }
@@ -222,7 +211,6 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
                 val result = withContext(Dispatchers.IO) {
                     engine.create(
                         config = current.config,
-                        apiKey = current.apiKey,
                         mode = current.mode,
                         prompt = current.prompt,
                         inputImages = inputs,
@@ -265,13 +253,17 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
 
     fun sendChatMessage() {
         val current = _state.value
-        val message = current.chatDraft.trim()
+        val message = current.chatDraft.trim().ifBlank {
+            if (current.chatAttachment != null) "Analise o arquivo anexado." else ""
+        }
         if (current.chatBusy || message.isBlank()) return
         val history = current.chatMessages
+        val attachments = listOfNotNull(current.chatAttachment)
         _state.value = current.copy(
             chatDraft = "",
+            chatAttachment = null,
             chatBusy = true,
-            chatMessages = history + ChatMessage("user", message),
+            chatMessages = history + ChatMessage("user", message, attachments),
             pendingChatAction = null,
             error = null,
             status = null,
@@ -281,9 +273,9 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
                 val result = withContext(Dispatchers.IO) {
                     chatAssistant.reply(
                         config = current.config,
-                        apiKey = current.chatApiKey.ifBlank { current.apiKey },
-                        history = history.map { ChatTurn(it.role, it.content) },
+                        history = history.map { ChatTurn(it.role, it.content, it.attachments) },
                         userMessage = message,
+                        attachments = attachments,
                     )
                 }
                 _state.value = _state.value.copy(
@@ -308,6 +300,9 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
             page = MainPage.CREATE,
             prompt = action.prompt,
             mode = action.mode,
+            inputImages = List(MAX_REFERENCE_IMAGES) { index ->
+                action.referenceImages.getOrNull(index)
+            },
             status = "Ação do chat confirmada. Revise e toque em Criar para enviar.",
             error = null,
         )
@@ -330,19 +325,21 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun validateEngine(config: ProviderConfig) {
         require(config.baseUrl.isNotBlank()) { "Informe o endereço do motor nas configurações." }
-        when (config.engine) {
-            EngineKind.OPENAI_COMPATIBLE -> {
-                OpenAiEndpoint.parseBaseUrl(config.baseUrl)
-                require(config.model.length <= 200) { "O ID do modelo é muito longo." }
-            }
-            EngineKind.COMFYUI -> {
-                EngineUrlPolicy.parse(config.baseUrl, "ComfyUI")
-            }
-        }
+        EngineUrlPolicy.parse(config.baseUrl, "ComfyUI")
+        EngineUrlPolicy.parse(config.chatBaseUrl, "Ollama")
+        require(config.chatModel in SUPPORTED_CHAT_MODELS) { "Escolha Qwen3 ou Gemma 2 2B para o chat." }
     }
 
-    private fun updateConfig(transform: (ProviderConfig) -> ProviderConfig) {
-        _state.value = _state.value.copy(config = transform(_state.value.config), error = null, status = null)
+    private fun updateConfig(transform: (ProviderConfig) -> ProviderConfig): Boolean {
+        val config = transform(_state.value.config)
+        try {
+            configStore.save(config)
+            _state.value = _state.value.copy(config = config, error = null, status = null)
+            return true
+        } catch (error: Exception) {
+            report(error)
+            return false
+        }
     }
 
     private fun report(error: Throwable) {

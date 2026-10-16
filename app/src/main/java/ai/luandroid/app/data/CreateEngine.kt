@@ -12,7 +12,6 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -30,107 +29,16 @@ class CreateEngine {
         .callTimeout(90, TimeUnit.SECONDS)
         .build()
 
-    suspend fun discoverModels(config: ProviderConfig, apiKey: String): List<String> {
-        val base = OpenAiEndpoint.parseBaseUrl(config.baseUrl)
-        val request = request(OpenAiEndpoint.modelsUrl(base), apiKey).get().build()
-        val json = JSONObject(execute(request).text())
-        val data = json.optJSONArray("data") ?: JSONArray()
-        return (0 until data.length())
-            .mapNotNull { data.optJSONObject(it)?.optString("id")?.takeIf(String::isNotBlank) }
-            .distinct()
-            .sorted()
-    }
-
     suspend fun create(
         config: ProviderConfig,
-        apiKey: String,
         mode: CreateMode,
         prompt: String,
         inputImages: List<File>,
         save: (ByteArray, String, String) -> MediaAsset,
-    ): List<MediaAsset> = when (config.engine) {
-        EngineKind.OPENAI_COMPATIBLE -> createOpenAi(config, apiKey, mode, prompt, inputImages, save)
-        EngineKind.COMFYUI -> createComfy(config, apiKey, mode, prompt, inputImages, save)
-    }
-
-    private suspend fun createOpenAi(
-        config: ProviderConfig,
-        apiKey: String,
-        mode: CreateMode,
-        prompt: String,
-        inputImages: List<File>,
-        save: (ByteArray, String, String) -> MediaAsset,
-    ): List<MediaAsset> {
-        require(mode != CreateMode.IMAGE_TO_VIDEO) {
-            "A criação de vídeo a partir de imagem precisa de um workflow ComfyUI. Selecione ComfyUI ou troque o modo."
-        }
-        val base = OpenAiEndpoint.parseBaseUrl(config.baseUrl)
-        require(config.model.isNotBlank()) { "Informe o ID do modelo de imagem nas configurações do motor." }
-        val url = if (mode == CreateMode.EDIT) {
-            OpenAiEndpoint.imageEditsUrl(base)
-        } else {
-            OpenAiEndpoint.imageGenerationsUrl(base)
-        }
-        val body = if (mode == CreateMode.EDIT) {
-            require(inputImages.isNotEmpty()) { "Escolha ao menos uma imagem para editar." }
-            require(inputImages.size <= MAX_REFERENCE_IMAGES) {
-                "O app aceita até $MAX_REFERENCE_IMAGES imagens de referência."
-            }
-            val builder = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("model", config.model)
-                .addFormDataPart("prompt", prompt)
-            inputImages.forEach { image ->
-                builder.addFormDataPart(
-                    "image[]",
-                    image.name,
-                    image.asRequestBody((image.mimeType() ?: "image/jpeg").toMediaType()),
-                )
-            }
-            builder.build()
-        } else {
-            JSONObject()
-                .put("model", config.model)
-                .put("prompt", prompt)
-                .put("n", 1)
-                .put("size", "1024x1024")
-                .toString()
-                .toRequestBody(JSON_MEDIA_TYPE)
-        }
-        val response = execute(request(url, apiKey).post(body).build())
-        val item = JSONObject(response.text()).optJSONArray("data")
-            ?.optJSONObject(0)
-            ?: throw IOException("O motor de imagem não retornou nenhuma imagem.")
-        val encoded = item.optString("b64_json")
-        val image = if (encoded.isNotBlank()) {
-            try {
-                val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
-                bytes to sniffImageMime(bytes)
-            } catch (error: IllegalArgumentException) {
-                throw IOException("O motor de imagem retornou dados base64 inválidos.", error)
-            }
-        } else {
-            val imageUrl = item.optString("url")
-            require(imageUrl.isNotBlank()) { "O motor não retornou os dados da imagem nem uma URL." }
-            val parsedUrl = imageUrl.toHttpUrlOrNull()
-                ?: throw IOException("O motor retornou uma URL de imagem inválida.")
-            require(EngineUrlPolicy.isPermitted(parsedUrl)) {
-                "O motor retornou uma URL pública sem criptografia. Configure HTTPS ou solicite a imagem em base64."
-            }
-            val downloaded = execute(request(parsedUrl, "").get().build())
-            downloaded.bytes to (
-                downloaded.contentType
-                    ?.substringBefore(';')
-                    ?.takeIf { it.startsWith("image/") }
-                    ?: sniffImageMime(downloaded.bytes)
-                )
-        }
-        return listOf(save(image.first, image.second, prompt))
-    }
+    ): List<MediaAsset> = createComfy(config, mode, prompt, inputImages, save)
 
     private suspend fun createComfy(
         config: ProviderConfig,
-        apiKey: String,
         mode: CreateMode,
         prompt: String,
         inputImages: List<File>,
@@ -157,17 +65,22 @@ class CreateEngine {
                 )
                 .build()
             JSONObject(
-                execute(request(endpoint(base, "upload/image"), apiKey).post(multipart).build()).text(),
+                execute(request(endpoint(base, "upload/image")).post(multipart).build()).text(),
             )
         }
         val workflow = JSONObject(config.workflowJson)
-        replacePlaceholders(workflow, prompt, uploads)
+        val parameters = if (config.generationParametersJson.isBlank()) {
+            JSONObject()
+        } else {
+            ImageGenerationParameters.parse(config.generationParametersJson)
+        }
+        replacePlaceholders(workflow, prompt, uploads, parameters)
         val launch = JSONObject()
             .put("prompt", workflow)
             .put("client_id", UUID.randomUUID().toString())
         val promptId = JSONObject(
             execute(
-                request(endpoint(base, "prompt"), apiKey)
+                request(endpoint(base, "prompt"))
                     .post(launch.toString().toRequestBody(JSON_MEDIA_TYPE))
                     .build(),
             ).text(),
@@ -179,7 +92,7 @@ class CreateEngine {
         while (System.nanoTime() < deadline) {
             delay(1_500)
             val historyJson = JSONObject(
-                execute(request(endpoint(base, "history/$promptId"), apiKey).get().build()).text(),
+                execute(request(endpoint(base, "history/$promptId")).get().build()).text(),
             )
             val history = historyJson.optJSONObject(promptId)
             if (history != null) {
@@ -209,32 +122,59 @@ class CreateEngine {
                 .addQueryParameter("subfolder", result.subfolder)
                 .addQueryParameter("type", result.type)
                 .build()
-            val bytes = execute(request(viewUrl, apiKey).get().build()).bytes
+            val bytes = execute(request(viewUrl).get().build()).bytes
             save(bytes, result.mimeType, prompt)
         }
     }
 
-    private fun replacePlaceholders(workflow: Any, prompt: String, uploads: List<JSONObject>) {
+    private fun replacePlaceholders(
+        workflow: Any,
+        prompt: String,
+        uploads: List<JSONObject>,
+        parameters: JSONObject,
+    ) {
         when (workflow) {
             is JSONObject -> {
                 val keys = workflow.keys().asSequence().toList()
                 keys.forEach { key ->
                     val value = workflow.get(key)
                     when (value) {
-                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, uploads)
-                        is String -> workflow.put(key, replaceString(value, prompt, uploads))
+                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, uploads, parameters)
+                        is String -> workflow.put(key, replaceParameter(value, prompt, uploads, parameters))
                     }
                 }
             }
             is JSONArray -> {
                 for (index in 0 until workflow.length()) {
                     when (val value = workflow.get(index)) {
-                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, uploads)
-                        is String -> workflow.put(index, replaceString(value, prompt, uploads))
+                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, uploads, parameters)
+                        is String -> workflow.put(index, replaceParameter(value, prompt, uploads, parameters))
                     }
                 }
             }
         }
+    }
+
+    private fun replaceParameter(
+        value: String,
+        prompt: String,
+        uploads: List<JSONObject>,
+        parameters: JSONObject,
+    ): Any {
+        val parameter = when (value) {
+            "{{SEED}}" -> "seed"
+            "{{STEPS}}" -> "steps"
+            "{{CFG}}" -> "cfg"
+            "{{WIDTH}}" -> "width"
+            "{{HEIGHT}}" -> "height"
+            "{{DENOISE}}" -> "denoise"
+            "{{SAMPLER}}" -> "sampler_name"
+            "{{SCHEDULER}}" -> "scheduler"
+            "{{NEGATIVE_PROMPT}}" -> "negative_prompt"
+            else -> null
+        }
+        if (parameter != null && parameters.has(parameter)) return parameters.get(parameter)
+        return replaceString(value, prompt, uploads)
     }
 
     private fun replaceString(value: String, prompt: String, uploads: List<JSONObject>): String {
@@ -287,7 +227,7 @@ class CreateEngine {
         return results.distinctBy { it.filename to it.subfolder }
     }
 
-    private fun request(url: HttpUrl, apiKey: String): Request.Builder =
+    private fun request(url: HttpUrl, apiKey: String = ""): Request.Builder =
         Request.Builder()
             .url(url)
             .header("Accept", "application/json, image/*, video/*")
@@ -368,22 +308,6 @@ class CreateEngine {
         "jpg", "jpeg" -> "image/jpeg"
         "webp" -> "image/webp"
         "gif" -> "image/gif"
-        else -> "image/png"
-    }
-
-    private fun sniffImageMime(bytes: ByteArray): String = when {
-        bytes.size >= 8 &&
-            bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
-            bytes[2] == 0x4e.toByte() && bytes[3] == 0x47.toByte() -> "image/png"
-        bytes.size >= 3 &&
-            bytes[0] == 0xff.toByte() && bytes[1] == 0xd8.toByte() &&
-            bytes[2] == 0xff.toByte() -> "image/jpeg"
-        bytes.size >= 12 &&
-            bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
-            bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP" -> "image/webp"
-        bytes.size >= 6 &&
-            (bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) == "GIF87a" ||
-                bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) == "GIF89a") -> "image/gif"
         else -> "image/png"
     }
 
