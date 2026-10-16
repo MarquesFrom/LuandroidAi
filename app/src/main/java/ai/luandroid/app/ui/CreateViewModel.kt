@@ -37,6 +37,7 @@ data class ChatMessage(
 data class CreateUiState(
     val page: MainPage = MainPage.CREATE,
     val config: ProviderConfig = ProviderConfig(),
+    val workflowDraft: String = "",
     val prompt: String = "",
     val mode: CreateMode = CreateMode.IMAGE,
     val inputImages: List<String?> = listOf(null, null),
@@ -63,8 +64,10 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         try {
+            val config = configStore.load()
             _state.value = _state.value.copy(
-                config = configStore.load(),
+                config = config,
+                workflowDraft = config.workflowJson,
                 assets = library.load(),
             )
         } catch (error: Exception) {
@@ -73,8 +76,16 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectModel(model: String) {
-        require(model in SUPPORTED_CHAT_MODELS) { "Escolha Qwen3 ou Gemma 2 2B." }
+        require(model in SUPPORTED_CHAT_MODELS) { "Escolha um modelo Ollama compatível." }
         updateConfig { it.copy(chatModel = model) }
+    }
+
+    fun setComfyUrl(value: String) {
+        updateConfig { it.copy(baseUrl = value) }
+    }
+
+    fun setOllamaUrl(value: String) {
+        updateConfig { it.copy(chatBaseUrl = value) }
     }
 
     fun setPage(page: MainPage) {
@@ -82,7 +93,23 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         if (page == MainPage.GALLERY) refreshGallery()
     }
 
-    fun setWorkflow(value: String): Boolean = updateConfig { it.copy(workflowJson = value) }
+    fun setWorkflowDraft(value: String) {
+        _state.value = _state.value.copy(workflowDraft = value, error = null, status = null)
+    }
+
+    fun saveWorkflow() {
+        persistWorkflow(_state.value.workflowDraft, "Workflow JSON salvo.")
+    }
+
+    fun clearWorkflow() {
+        if (updateConfig { it.copy(workflowJson = "") }) {
+            _state.value = _state.value.copy(
+                workflowDraft = "",
+                status = "Workflow removido.",
+                error = null,
+            )
+        }
+    }
     fun setPrompt(value: String) { _state.value = _state.value.copy(prompt = value, error = null) }
     fun setMode(value: CreateMode) { _state.value = _state.value.copy(mode = value, error = null) }
     fun setChatDraft(value: String) { _state.value = _state.value.copy(chatDraft = value, error = null) }
@@ -175,13 +202,22 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importWorkflow(content: String) {
+        persistWorkflow(content, "Workflow importado e salvo.")
+    }
+
+    private fun persistWorkflow(content: String, successMessage: String) {
         try {
             require(content.isNotBlank()) { "O arquivo de workflow está vazio." }
             require(content.length <= MAX_WORKFLOW_CHARS) { "O workflow ultrapassa o limite de 2 MB." }
             val parsed = org.json.JSONObject(content)
             require(parsed.length() > 0) { "O workflow não contém nós." }
-            if (setWorkflow(parsed.toString(2))) {
-                _state.value = _state.value.copy(status = "Workflow importado e salvo.", error = null)
+            val formatted = parsed.toString(2)
+            if (updateConfig { it.copy(workflowJson = formatted) }) {
+                _state.value = _state.value.copy(
+                    workflowDraft = formatted,
+                    status = successMessage,
+                    error = null,
+                )
             }
         } catch (error: Exception) {
             report(error)

@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
@@ -54,6 +55,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -203,7 +205,12 @@ private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
                     MainPage.ENGINE -> EnginePage(
                         state = state,
                         onSelectModel = viewModel::selectModel,
+                        onComfyUrlChange = viewModel::setComfyUrl,
+                        onOllamaUrlChange = viewModel::setOllamaUrl,
                         onImportWorkflow = { workflowPicker.launch("application/json") },
+                        onWorkflowDraftChange = viewModel::setWorkflowDraft,
+                        onSaveWorkflow = viewModel::saveWorkflow,
+                        onClearWorkflow = viewModel::clearWorkflow,
                     )
                 }
             }
@@ -332,45 +339,109 @@ private fun CreatePage(
 private fun EnginePage(
     state: CreateUiState,
     onSelectModel: (String) -> Unit,
+    onComfyUrlChange: (String) -> Unit,
+    onOllamaUrlChange: (String) -> Unit,
     onImportWorkflow: () -> Unit,
+    onWorkflowDraftChange: (String) -> Unit,
+    onSaveWorkflow: () -> Unit,
+    onClearWorkflow: () -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Escolha o modelo do chat e o workflow ComfyUI. A seleção fica salva automaticamente.")
+        Text("ENDEREÇOS DOS MOTORES", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        OutlinedTextField(
+            value = state.config.baseUrl,
+            onValueChange = onComfyUrlChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Servidor ComfyUI") },
+            placeholder = { Text("http://192.168.1.20:8188") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            singleLine = true,
+            enabled = !state.busy,
+        )
+        OutlinedTextField(
+            value = state.config.chatBaseUrl,
+            onValueChange = onOllamaUrlChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Servidor Ollama") },
+            placeholder = { Text("http://192.168.1.20:11434") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            singleLine = true,
+            enabled = !state.chatBusy,
+        )
+        Text(
+            "Os endereços padrão funcionam no emulador Android. Em um celular físico, informe o IP " +
+                "da máquina que executa ComfyUI e Ollama.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text("MODELO DO CHAT", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text(
             "Os modelos precisam estar instalados no Ollama conectado ao app.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = state.config.chatModel == "qwen3:8b",
-                onClick = { onSelectModel("qwen3:8b") },
-                label = { Text("Qwen 3 · padrão") },
-            )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.config.chatModel == "qwen3:8b",
+                    onClick = { onSelectModel("qwen3:8b") },
+                    label = { Text("Qwen 3 · texto") },
+                )
+                FilterChip(
+                    selected = state.config.chatModel == "qwen3-vl:8b",
+                    onClick = { onSelectModel("qwen3-vl:8b") },
+                    label = { Text("Qwen3-VL · visão") },
+                )
+            }
             FilterChip(
                 selected = state.config.chatModel == "gemma2:2b",
                 onClick = { onSelectModel("gemma2:2b") },
-                label = { Text("Gemma 2 · 2B") },
+                label = { Text("Gemma 2 · 2B · texto") },
             )
         }
+        Text(
+            "Para conversar sobre imagens e quadros de vídeos anexados, instale e selecione qwen3-vl:8b. " +
+                "Qwen 3 e Gemma 2 são modelos de texto.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text("WORKFLOW DE CRIAÇÃO · COMFYUI", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text(
-            "ComfyUI já é o motor padrão para imagens, clonagem e vídeos. Selecione o arquivo JSON exportado em formato API. O workflow selecionado fica salvo automaticamente.",
+            "Importe um workflow exportado pelo ComfyUI em formato API ou edite o JSON diretamente. " +
+                "O conteúdo fica salvo no dispositivo e pode ser trocado quando quiser.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedButton(onClick = onImportWorkflow, enabled = !state.busy) {
-            Text(if (state.config.workflowJson.isBlank()) "Escolher workflow ComfyUI" else "Trocar workflow")
+            Text(if (state.config.workflowJson.isBlank()) "Importar workflow JSON" else "Importar outro JSON")
         }
-        if (state.config.workflowJson.isNotBlank()) {
-            Text("Workflow carregado e pronto para usar.")
+        OutlinedTextField(
+            value = state.workflowDraft,
+            onValueChange = onWorkflowDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Workflow ComfyUI · JSON API") },
+            placeholder = { Text("Cole ou edite o JSON do workflow aqui…") },
+            minLines = 8,
+            maxLines = 14,
+            enabled = !state.busy,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onSaveWorkflow,
+                enabled = !state.busy && state.workflowDraft.isNotBlank(),
+            ) { Text("Validar e salvar JSON") }
+            if (state.config.workflowJson.isNotBlank()) {
+                TextButton(onClick = onClearWorkflow, enabled = !state.busy) { Text("Remover workflow") }
+            }
         }
         Text(
-            "Para escolher outro workflow, exporte-o do ComfyUI em formato API e selecione o JSON aqui.",
+            "Placeholders disponíveis nos nós: {{PROMPT}}, {{IMAGE_FILENAME}}, {{IMAGE_SUBFOLDER}}, " +
+                "{{IMAGE_TYPE}}, {{IMAGE2_FILENAME}}, {{IMAGE2_SUBFOLDER}} e {{IMAGE2_TYPE}}. " +
+                "O workflow deve conter nós de entrada e saída compatíveis com a operação escolhida.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -392,7 +463,8 @@ private fun ChatPage(
     val showGalleryPicker = remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Chat Ollama ativo com ${state.config.chatModel}. Os modelos disponíveis são de texto; use a aba Criar para enviar imagens de referência ao workflow.",
+            "Chat Ollama ativo com ${state.config.chatModel}. Com Qwen3-VL, você pode anexar imagens " +
+                "e vídeos para análise; use Criar para editar uma imagem ou gerar uma animação.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -33,8 +33,11 @@ class ChatAssistant {
         attachments: List<ChatFile> = emptyList(),
     ): ChatResult {
         require(config.chatModel.isNotBlank()) { "Escolha um modelo Ollama na aba Motor." }
-        require(attachments.isEmpty()) {
-            "Qwen3 e Gemma 2 2B são modelos de texto. Para usar uma imagem de referência, abra a aba Criar."
+        require(
+            (attachments.isEmpty() && history.all { it.attachments.isEmpty() }) ||
+                config.chatModel == QWEN3_VISION_MODEL,
+        ) {
+            "Para analisar imagens ou vídeos no chat, selecione Qwen3-VL na aba Motor."
         }
         val messages = JSONArray()
             .put(

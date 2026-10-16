@@ -12,26 +12,34 @@ desktop app.
 ## Ollama chat and models
 
 Chat uses Ollama's native `/api/chat` endpoint. The app is preconfigured for
-`qwen3:8b` and lets the user switch to `gemma2:2b`. Both are text models and
-must already be installed on the connected Ollama server. If needed, install
-them there with:
+`qwen3:8b`; the Engine tab also offers `qwen3-vl:8b` for image and sampled
+video-frame analysis, plus `gemma2:2b` as a text-only alternative. Models must
+already be installed on the connected Ollama server. If needed, install them
+there with:
 
 ```sh
 ollama pull qwen3:8b
+ollama pull qwen3-vl:8b
 ollama pull gemma2:2b
 ```
+
+Select Qwen3-VL in the Engine tab before attaching images or videos to chat.
+Qwen3-VL can discuss the attached media and prepare confirmed image or video
+creation requests. The text-only models cannot analyze chat attachments.
 
 The server address defaults to `http://10.0.2.2:11434` and ComfyUI to
 `http://10.0.2.2:8188`, which reach the host computer from the Android
 emulator. The server processes must be running and reachable. On a physical
-phone, the host address is different and the server must accept LAN requests.
+phone, set both server addresses in the Engine tab to the host's LAN address
+and make sure the servers accept LAN requests.
 
 ## Image creation, cloning and video
 
 Ollama does not generate or edit images. Image generation, reference-image
-cloning/editing and image-to-video use ComfyUI's API. In Motor, select the
-workflow JSON exported from ComfyUI in **API format**. Its selection is saved
-automatically. Use `{{PROMPT}}` and the image placeholders
+cloning/editing and image-to-video use ComfyUI's API. In Motor, import a
+workflow JSON exported from ComfyUI in **API format**, or paste/edit its JSON
+directly in the workflow editor. Saving validates the JSON and persists the
+selected workflow on the device. Use `{{PROMPT}}` and the image placeholders
 `{{IMAGE_FILENAME}}`, `{{IMAGE_SUBFOLDER}}`, `{{IMAGE_TYPE}}`,
 `{{IMAGE2_FILENAME}}`, `{{IMAGE2_SUBFOLDER}}` and `{{IMAGE2_TYPE}}` in the
 corresponding workflow nodes. Optional sampler placeholders are `{{SEED}}`,
@@ -42,16 +50,18 @@ The create screen supports up to two reference images. Choose **Clonar /
 editar**, attach one or two references and describe what to change or preserve.
 The Ollama chat can prepare a creation and queue it for explicit confirmation
 in the app before opening the create screen. Qwen3 and Gemma 2 2B are text-only;
-use the Create screen to attach images to a visual workflow. The ComfyUI
-workflow must have matching image input nodes and compatible installed models.
+use Qwen3-VL to discuss chat attachments. The ComfyUI workflow must have
+matching image input nodes and compatible installed models. Image-to-video
+workflows may return a video file or an animated GIF.
 
 ## Other implemented features
 
 - Portuguese native Android interface with Create, Chat, Gallery and Engine tabs
-- Qwen 3 chat by default, with a one-tap switch to Gemma 2 2B
+- Qwen 3 chat by default, with Qwen3-VL vision and Gemma 2 2B options
 - Assistant chat with confirmation-gated visual creation requests
 - Local gallery storage and opening generated media in Android apps
-- ComfyUI workflow selection that is saved automatically
+- Editable/importable ComfyUI API workflow JSON, saved on the device
+- Image-to-video workflows that can return video files or animated GIFs
 - No cloud API keys are required by the app
 
 HTTP is enabled for local-network engines. HTTP does not protect prompts or

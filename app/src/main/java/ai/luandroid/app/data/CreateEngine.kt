@@ -22,6 +22,13 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+internal fun isExpectedComfyOutput(mimeType: String, mode: CreateMode): Boolean =
+    if (mode == CreateMode.IMAGE_TO_VIDEO) {
+        mimeType.startsWith("video/") || mimeType == "image/gif"
+    } else {
+        mimeType.startsWith("image/")
+    }
+
 class CreateEngine {
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -111,9 +118,13 @@ class CreateEngine {
             throw IOException("O ComfyUI não retornou mídia em 20 minutos. Verifique os nós de saída do workflow.")
         }
         val videoRequested = mode == CreateMode.IMAGE_TO_VIDEO
-        val candidates = output.filter { it.mimeType.startsWith(if (videoRequested) "video/" else "image/") }
+        val candidates = output.filter { isExpectedComfyOutput(it.mimeType, mode) }
         require(candidates.isNotEmpty()) {
-            if (videoRequested) "O workflow terminou sem gerar um vídeo." else "O workflow terminou sem gerar uma imagem."
+            if (videoRequested) {
+                "O workflow terminou sem gerar um vídeo ou GIF animado."
+            } else {
+                "O workflow terminou sem gerar uma imagem."
+            }
         }
         return candidates.take(4).map { result ->
             val viewUrl = endpoint(base, "view")

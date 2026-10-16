@@ -27,9 +27,10 @@ class OllamaClientTest {
     }
 
     @Test
-    fun offersQwenAsDefaultAndGemma2TwoBAsTheOnlyAlternative() {
+    fun offersQwenTextAndVisionModelsByDefaultAlongsideGemmaAlternative() {
         assertEquals("qwen3:8b", DEFAULT_OLLAMA_MODEL)
-        assertEquals(listOf("qwen3:8b", "gemma2:2b"), SUPPORTED_CHAT_MODELS)
+        assertEquals(listOf("qwen3:8b", "qwen3-vl:8b", "gemma2:2b"), SUPPORTED_CHAT_MODELS)
+        assertEquals("qwen3-vl:8b", QWEN3_VISION_MODEL)
         assertEquals("10.0.2.2", EngineUrlPolicy.parse(DEFAULT_COMFY_URL, "ComfyUI").host)
     }
 }
