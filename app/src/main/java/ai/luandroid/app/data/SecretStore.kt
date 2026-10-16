@@ -14,22 +14,24 @@ import javax.crypto.spec.GCMParameterSpec
 class SecretStore(context: Context) {
     private val preferences = context.getSharedPreferences("engine_secret", Context.MODE_PRIVATE)
 
-    fun save(value: String) {
+    fun save(value: String, account: String = DEFAULT_ACCOUNT) {
+        validateAccount(account)
         if (value.isEmpty()) {
-            preferences.edit().remove(KEY_VALUE).apply()
+            preferences.edit().remove(keyFor(account)).apply()
             return
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
         val stored = cipher.iv + encrypted
-        check(preferences.edit().putString(KEY_VALUE, Base64.encodeToString(stored, Base64.NO_WRAP)).commit()) {
+        check(preferences.edit().putString(keyFor(account), Base64.encodeToString(stored, Base64.NO_WRAP)).commit()) {
             "Não foi possível salvar a chave de API criptografada."
         }
     }
 
-    fun load(): String {
-        val encoded = preferences.getString(KEY_VALUE, null) ?: return ""
+    fun load(account: String = DEFAULT_ACCOUNT): String {
+        validateAccount(account)
+        val encoded = preferences.getString(keyFor(account), null) ?: return ""
         return try {
             val stored = Base64.decode(encoded, Base64.NO_WRAP)
             require(stored.size > IV_LENGTH) { "Os dados salvos da chave de API estão incompletos." }
@@ -65,10 +67,20 @@ class SecretStore(context: Context) {
         return generator.generateKey()
     }
 
+    private fun keyFor(account: String): String =
+        if (account == DEFAULT_ACCOUNT) LEGACY_KEY else "encrypted_api_key_$account"
+
+    private fun validateAccount(account: String) {
+        require(account.matches(Regex("[a-z][a-z0-9_]{0,31}"))) {
+            "A chave de armazenamento solicitada não é válida."
+        }
+    }
+
     private companion object {
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val KEY_ALIAS = "luandroid-engine-api-key"
-        const val KEY_VALUE = "encrypted_api_key"
+        const val DEFAULT_ACCOUNT = "engine"
+        const val LEGACY_KEY = "encrypted_api_key"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val IV_LENGTH = 12
         const val TAG_LENGTH_BITS = 128

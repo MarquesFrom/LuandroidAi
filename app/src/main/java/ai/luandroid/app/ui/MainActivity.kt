@@ -57,6 +57,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.luandroid.app.data.CreateMode
+import ai.luandroid.app.data.EnginePreset
 import ai.luandroid.app.data.EngineKind
 import ai.luandroid.app.data.MediaAsset
 import java.io.File
@@ -84,8 +85,11 @@ class MainActivity : ComponentActivity() {
 private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let(viewModel::importImage)
+    val firstImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { viewModel.importImage(it, 0) }
+    }
+    val secondImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { viewModel.importImage(it, 1) }
     }
     val workflowPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
@@ -133,6 +137,12 @@ private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
                     label = { Text("Criar") },
                 )
                 NavigationBarItem(
+                    selected = state.page == MainPage.CHAT,
+                    onClick = { viewModel.setPage(MainPage.CHAT) },
+                    icon = { Text("✉") },
+                    label = { Text("Chat IA") },
+                )
+                NavigationBarItem(
                     selected = state.page == MainPage.GALLERY,
                     onClick = { viewModel.setPage(MainPage.GALLERY) },
                     icon = { Text("▧") },
@@ -159,21 +169,36 @@ private fun LuandroidApp(viewModel: CreateViewModel = viewModel()) {
                         state = state,
                         onPromptChange = viewModel::setPrompt,
                         onModeChange = viewModel::setMode,
-                        onPickImage = { imagePicker.launch("image/*") },
+                        onPickImage = { slot ->
+                            if (slot == 0) firstImagePicker.launch("image/*")
+                            else secondImagePicker.launch("image/*")
+                        },
                         onRemoveImage = viewModel::removeImage,
                         onCreate = viewModel::create,
                         onCancel = viewModel::cancel,
                         onOpenEngine = { viewModel.setPage(MainPage.ENGINE) },
                         onOpenAsset = { openAsset(context, it) },
                     )
+                    MainPage.CHAT -> ChatPage(
+                        state = state,
+                        onDraftChange = viewModel::setChatDraft,
+                        onSend = viewModel::sendChatMessage,
+                        onConfirmAction = viewModel::confirmChatAction,
+                        onDismissAction = viewModel::dismissChatAction,
+                    )
                     MainPage.GALLERY -> GalleryPage(state.assets, onOpen = { openAsset(context, it) })
                     MainPage.ENGINE -> EnginePage(
                         state = state,
+                        onApplyPreset = viewModel::applyPreset,
                         onEngineChange = viewModel::setEngine,
                         onNameChange = viewModel::setName,
                         onUrlChange = viewModel::setBaseUrl,
                         onModelChange = viewModel::setModel,
                         onApiKeyChange = viewModel::setApiKey,
+                        onChatUrlChange = viewModel::setChatBaseUrl,
+                        onChatModelChange = viewModel::setChatModel,
+                        onSearchUrlChange = viewModel::setSearchUrl,
+                        onChatApiKeyChange = viewModel::setChatApiKey,
                         onImportWorkflow = { workflowPicker.launch("application/json") },
                         onSave = viewModel::saveEngine,
                         onDiscoverModels = viewModel::discoverModels,
@@ -189,8 +214,8 @@ private fun CreatePage(
     state: CreateUiState,
     onPromptChange: (String) -> Unit,
     onModeChange: (CreateMode) -> Unit,
-    onPickImage: () -> Unit,
-    onRemoveImage: () -> Unit,
+    onPickImage: (Int) -> Unit,
+    onRemoveImage: (Int) -> Unit,
     onCreate: () -> Unit,
     onCancel: () -> Unit,
     onOpenEngine: () -> Unit,
@@ -216,16 +241,29 @@ private fun CreatePage(
             minLines = 4,
             maxLines = 8,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = onPickImage, enabled = !state.busy) {
-                Text(if (state.inputImage == null) "Adicionar imagem" else "Trocar imagem")
+        repeat(2) { slot ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { onPickImage(slot) },
+                    enabled = !state.busy && (slot == 0 || state.inputImages[0] != null),
+                ) {
+                    Text(
+                        when {
+                            state.inputImages.getOrNull(slot) != null -> "Trocar referência ${slot + 1}"
+                            slot == 0 -> "Adicionar referência 1"
+                            else -> "Adicionar referência 2"
+                        },
+                    )
+                }
+                if (state.inputImages.getOrNull(slot) != null) {
+                    Text("Imagem ${slot + 1} anexada", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { onRemoveImage(slot) }, enabled = !state.busy) { Text("Remover") }
+                }
             }
-            state.inputImage?.let {
-                Text("Imagem anexada", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton(onClick = onRemoveImage, enabled = !state.busy) { Text("Remover") }
+            state.inputImages.getOrNull(slot)?.let {
+                InputImagePreview(it)
             }
         }
-        state.inputImage?.let { InputImagePreview(it) }
 
         val engineName = when (state.config.engine) {
             EngineKind.OPENAI_COMPATIBLE -> state.config.name.ifBlank { "OpenAI-compatible" }
@@ -284,11 +322,16 @@ private fun CreatePage(
 @Composable
 private fun EnginePage(
     state: CreateUiState,
+    onApplyPreset: (EnginePreset) -> Unit,
     onEngineChange: (EngineKind) -> Unit,
     onNameChange: (String) -> Unit,
     onUrlChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
+    onChatUrlChange: (String) -> Unit,
+    onChatModelChange: (String) -> Unit,
+    onSearchUrlChange: (String) -> Unit,
+    onChatApiKeyChange: (String) -> Unit,
     onImportWorkflow: () -> Unit,
     onSave: () -> Unit,
     onDiscoverModels: () -> Unit,
@@ -298,6 +341,14 @@ private fun EnginePage(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Escolha onde a criação será processada.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Presets de motor", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        EnginePreset.entries.forEach { preset ->
+            FilterChip(
+                selected = state.config.name == preset.providerName && state.config.baseUrl == preset.baseUrl,
+                onClick = { onApplyPreset(preset) },
+                label = { Text(preset.label) },
+            )
+        }
         EngineKind.entries.forEach { kind ->
             Row(
                 Modifier.fillMaxWidth().clickable { onEngineChange(kind) }.padding(vertical = 4.dp),
@@ -343,6 +394,41 @@ private fun EnginePage(
             singleLine = true,
             supportingText = { Text("Armazenada criptografada pelo Android Keystore.") },
         )
+        Text("Chat assistente", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        OutlinedTextField(
+            value = state.config.chatBaseUrl,
+            onValueChange = onChatUrlChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Endpoint OpenAI-compatible do chat") },
+            placeholder = { Text("https://api.openai.com/v1") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = state.config.chatModel,
+            onValueChange = onChatModelChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Modelo de chat") },
+            placeholder = { Text("gpt-4.1-mini") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = state.chatApiKey,
+            onValueChange = onChatApiKeyChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("API key do chat (opcional)") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            supportingText = { Text("Se vazio, o chat reutiliza a chave do motor de imagem.") },
+        )
+        OutlinedTextField(
+            value = state.config.searchUrl,
+            onValueChange = onSearchUrlChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("URL base SearXNG para buscas (opcional)") },
+            placeholder = { Text("https://search.example.org") },
+            singleLine = true,
+            supportingText = { Text("O chat pesquisa na web quando essa instância SearXNG está configurada.") },
+        )
         if (state.config.engine == EngineKind.OPENAI_COMPATIBLE) {
             OutlinedTextField(
                 value = state.config.model,
@@ -360,13 +446,15 @@ private fun EnginePage(
         } else {
             Text(
                 "Importe um workflow no formato ComfyUI API. Placeholders aceitos: " +
-                    "{{PROMPT}}, {{IMAGE_FILENAME}}, {{IMAGE_SUBFOLDER}} e {{IMAGE_TYPE}}.",
+                    "{{PROMPT}}, {{IMAGE_FILENAME}}, {{IMAGE_SUBFOLDER}}, {{IMAGE_TYPE}}, " +
+                    "{{IMAGE2_FILENAME}}, {{IMAGE2_SUBFOLDER}} e {{IMAGE2_TYPE}}.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedButton(onClick = onImportWorkflow, enabled = !state.busy) {
                 Text(if (state.config.workflowJson.isBlank()) "Importar workflow JSON" else "Trocar workflow JSON")
             }
+
             if (state.config.workflowJson.isNotBlank()) {
                 Text("${state.config.workflowJson.length} caracteres de workflow carregados.")
             }
@@ -381,6 +469,79 @@ private fun EnginePage(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun ChatPage(
+    state: CreateUiState,
+    onDraftChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onConfirmAction: () -> Unit,
+    onDismissAction: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            "Converse, pesquise e prepare criações. O envio ao motor sempre precisa de sua confirmação.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(state.chatMessages.size) { index ->
+                val message = state.chatMessages[index]
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            if (message.role == "user") "Você" else "Assistente",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(message.content)
+                    }
+                }
+            }
+            item {
+                state.pendingChatAction?.let { action ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Criação preparada — confirme para revisar", fontWeight = FontWeight.SemiBold)
+                            Text("Modo: ${action.mode.name.lowercase().replace('_', ' ')}")
+                            Text(action.prompt)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = onConfirmAction) { Text("Revisar criação") }
+                                OutlinedButton(onClick = onDismissAction) { Text("Descartar") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        OutlinedTextField(
+            value = state.chatDraft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Mensagem para o assistente") },
+            placeholder = { Text("Pesquise, peça ideias ou descreva uma criação…") },
+            minLines = 2,
+            maxLines = 4,
+            enabled = !state.chatBusy,
+        )
+        Button(
+            onClick = onSend,
+            enabled = !state.chatBusy && state.chatDraft.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.chatBusy) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.size(8.dp))
+                Text("Pensando…")
+            } else {
+                Text("Enviar")
+            }
+        }
     }
 }
 

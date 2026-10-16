@@ -16,6 +16,9 @@ class EnginePreferences(context: Context) {
                 name = saved.optString("name"),
                 baseUrl = saved.optString("baseUrl"),
                 model = saved.optString("model"),
+                chatBaseUrl = saved.optString("chatBaseUrl"),
+                chatModel = saved.optString("chatModel"),
+                searchUrl = saved.optString("searchUrl"),
                 workflowJson = saved.optString("workflowJson"),
             )
         } catch (error: Exception) {
@@ -29,6 +32,9 @@ class EnginePreferences(context: Context) {
             .put("name", config.name)
             .put("baseUrl", config.baseUrl)
             .put("model", config.model)
+            .put("chatBaseUrl", config.chatBaseUrl)
+            .put("chatModel", config.chatModel)
+            .put("searchUrl", config.searchUrl)
             .put("workflowJson", config.workflowJson)
         check(preferences.edit().putString(CONFIG, json.toString()).commit()) {
             "Não foi possível salvar as configurações do motor."

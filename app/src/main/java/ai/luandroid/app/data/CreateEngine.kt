@@ -46,11 +46,11 @@ class CreateEngine {
         apiKey: String,
         mode: CreateMode,
         prompt: String,
-        inputImage: File?,
+        inputImages: List<File>,
         save: (ByteArray, String, String) -> MediaAsset,
     ): List<MediaAsset> = when (config.engine) {
-        EngineKind.OPENAI_COMPATIBLE -> createOpenAi(config, apiKey, mode, prompt, inputImage, save)
-        EngineKind.COMFYUI -> createComfy(config, apiKey, mode, prompt, inputImage, save)
+        EngineKind.OPENAI_COMPATIBLE -> createOpenAi(config, apiKey, mode, prompt, inputImages, save)
+        EngineKind.COMFYUI -> createComfy(config, apiKey, mode, prompt, inputImages, save)
     }
 
     private suspend fun createOpenAi(
@@ -58,7 +58,7 @@ class CreateEngine {
         apiKey: String,
         mode: CreateMode,
         prompt: String,
-        inputImage: File?,
+        inputImages: List<File>,
         save: (ByteArray, String, String) -> MediaAsset,
     ): List<MediaAsset> {
         require(mode != CreateMode.IMAGE_TO_VIDEO) {
@@ -72,17 +72,22 @@ class CreateEngine {
             OpenAiEndpoint.imageGenerationsUrl(base)
         }
         val body = if (mode == CreateMode.EDIT) {
-            val image = requireNotNull(inputImage) { "Escolha uma imagem para editar." }
-            MultipartBody.Builder()
+            require(inputImages.isNotEmpty()) { "Escolha ao menos uma imagem para editar." }
+            require(inputImages.size <= MAX_REFERENCE_IMAGES) {
+                "O app aceita até $MAX_REFERENCE_IMAGES imagens de referência."
+            }
+            val builder = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("model", config.model)
                 .addFormDataPart("prompt", prompt)
-                .addFormDataPart(
-                    "image",
+            inputImages.forEach { image ->
+                builder.addFormDataPart(
+                    "image[]",
                     image.name,
                     image.asRequestBody((image.mimeType() ?: "image/jpeg").toMediaType()),
                 )
-                .build()
+            }
+            builder.build()
         } else {
             JSONObject()
                 .put("model", config.model)
@@ -128,18 +133,20 @@ class CreateEngine {
         apiKey: String,
         mode: CreateMode,
         prompt: String,
-        inputImage: File?,
+        inputImages: List<File>,
         save: (ByteArray, String, String) -> MediaAsset,
     ): List<MediaAsset> {
         require(config.workflowJson.isNotBlank()) {
             "Importe um workflow ComfyUI API nas configurações do motor antes de gerar."
         }
-        if (mode != CreateMode.IMAGE) requireNotNull(inputImage) {
+        if (mode != CreateMode.IMAGE) require(inputImages.isNotEmpty()) {
             "Escolha uma imagem para editar ou transformar em vídeo."
         }
         val base = parseComfyBase(config.baseUrl)
-        var upload: JSONObject? = null
-        if (inputImage != null) {
+        require(inputImages.size <= MAX_REFERENCE_IMAGES) {
+            "O app aceita até $MAX_REFERENCE_IMAGES imagens de referência."
+        }
+        val uploads = inputImages.map { inputImage ->
             val multipart = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("overwrite", "true")
@@ -149,12 +156,12 @@ class CreateEngine {
                     inputImage.asRequestBody((inputImage.mimeType() ?: "image/jpeg").toMediaType()),
                 )
                 .build()
-            upload = JSONObject(
+            JSONObject(
                 execute(request(endpoint(base, "upload/image"), apiKey).post(multipart).build()).text(),
             )
         }
         val workflow = JSONObject(config.workflowJson)
-        replacePlaceholders(workflow, prompt, upload)
+        replacePlaceholders(workflow, prompt, uploads)
         val launch = JSONObject()
             .put("prompt", workflow)
             .put("client_id", UUID.randomUUID().toString())
@@ -207,38 +214,41 @@ class CreateEngine {
         }
     }
 
-    private fun replacePlaceholders(workflow: Any, prompt: String, upload: JSONObject?) {
+    private fun replacePlaceholders(workflow: Any, prompt: String, uploads: List<JSONObject>) {
         when (workflow) {
             is JSONObject -> {
                 val keys = workflow.keys().asSequence().toList()
                 keys.forEach { key ->
                     val value = workflow.get(key)
                     when (value) {
-                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, upload)
-                        is String -> workflow.put(key, replaceString(value, prompt, upload))
+                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, uploads)
+                        is String -> workflow.put(key, replaceString(value, prompt, uploads))
                     }
                 }
             }
             is JSONArray -> {
                 for (index in 0 until workflow.length()) {
                     when (val value = workflow.get(index)) {
-                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, upload)
-                        is String -> workflow.put(index, replaceString(value, prompt, upload))
+                        is JSONObject, is JSONArray -> replacePlaceholders(value, prompt, uploads)
+                        is String -> workflow.put(index, replaceString(value, prompt, uploads))
                     }
                 }
             }
         }
     }
 
-    private fun replaceString(value: String, prompt: String, upload: JSONObject?): String {
-        val imageName = upload?.optString("name").orEmpty()
-        val imageSubfolder = upload?.optString("subfolder").orEmpty()
-        val imageType = upload?.optString("type").orEmpty().ifBlank { "input" }
+    private fun replaceString(value: String, prompt: String, uploads: List<JSONObject>): String {
+        fun component(index: Int, key: String): String =
+            uploads.getOrNull(index)?.optString(key).orEmpty()
+        val imageType = component(0, "type").ifBlank { "input" }
         return value
             .replace("{{PROMPT}}", prompt)
-            .replace("{{IMAGE_FILENAME}}", imageName)
-            .replace("{{IMAGE_SUBFOLDER}}", imageSubfolder)
+            .replace("{{IMAGE_FILENAME}}", component(0, "name"))
+            .replace("{{IMAGE_SUBFOLDER}}", component(0, "subfolder"))
             .replace("{{IMAGE_TYPE}}", imageType)
+            .replace("{{IMAGE2_FILENAME}}", component(1, "name"))
+            .replace("{{IMAGE2_SUBFOLDER}}", component(1, "subfolder"))
+            .replace("{{IMAGE2_TYPE}}", component(1, "type").ifBlank { "input" })
     }
 
     private fun collectFiles(outputs: JSONObject?): List<ComfyFile> {
@@ -381,5 +391,6 @@ class CreateEngine {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val MAX_ERROR_CHARS = 8_000
         const val MAX_RESPONSE_BYTES = 100 * 1024 * 1024
+        const val MAX_REFERENCE_IMAGES = 2
     }
 }

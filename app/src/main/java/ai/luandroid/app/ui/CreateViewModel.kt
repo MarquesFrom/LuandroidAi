@@ -5,7 +5,11 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import ai.luandroid.app.data.CreateEngine
+import ai.luandroid.app.data.ChatAssistant
+import ai.luandroid.app.data.ChatAction
+import ai.luandroid.app.data.ChatTurn
 import ai.luandroid.app.data.CreateMode
+import ai.luandroid.app.data.EnginePreset
 import ai.luandroid.app.data.EngineKind
 import ai.luandroid.app.data.EngineUrlPolicy
 import ai.luandroid.app.data.EnginePreferences
@@ -24,7 +28,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import java.io.File
 
-enum class MainPage { CREATE, GALLERY, ENGINE }
+enum class MainPage { CREATE, CHAT, GALLERY, ENGINE }
+
+data class ChatMessage(val role: String, val content: String)
 
 data class CreateUiState(
     val page: MainPage = MainPage.CREATE,
@@ -32,10 +38,15 @@ data class CreateUiState(
     val apiKey: String = "",
     val prompt: String = "",
     val mode: CreateMode = CreateMode.IMAGE,
-    val inputImage: String? = null,
+    val inputImages: List<String?> = listOf(null, null),
     val assets: List<MediaAsset> = emptyList(),
     val models: List<String> = emptyList(),
     val busy: Boolean = false,
+    val chatBusy: Boolean = false,
+    val chatApiKey: String = "",
+    val chatDraft: String = "",
+    val chatMessages: List<ChatMessage> = emptyList(),
+    val pendingChatAction: ChatAction? = null,
     val status: String? = null,
     val error: String? = null,
 )
@@ -45,6 +56,7 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
     private val secretStore = SecretStore(application)
     private val library = MediaLibrary(application)
     private val engine = CreateEngine()
+    private val chatAssistant = ChatAssistant()
 
     private val _state = MutableStateFlow(CreateUiState())
     val state: StateFlow<CreateUiState> = _state.asStateFlow()
@@ -55,6 +67,7 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
             _state.value = _state.value.copy(
                 config = configStore.load(),
                 apiKey = secretStore.load(),
+                chatApiKey = secretStore.load("chat"),
                 assets = library.load(),
             )
         } catch (error: Exception) {
@@ -68,13 +81,28 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setEngine(engine: EngineKind) = updateConfig { it.copy(engine = engine) }
+    fun applyPreset(preset: EnginePreset) = updateConfig {
+        it.copy(
+            engine = preset.engine,
+            name = preset.providerName,
+            baseUrl = preset.baseUrl,
+            model = preset.model,
+            chatBaseUrl = preset.chatBaseUrl.ifBlank { it.chatBaseUrl },
+            chatModel = preset.chatModel.ifBlank { it.chatModel },
+        )
+    }
     fun setName(value: String) = updateConfig { it.copy(name = value) }
     fun setBaseUrl(value: String) = updateConfig { it.copy(baseUrl = value) }
     fun setModel(value: String) = updateConfig { it.copy(model = value) }
+    fun setChatBaseUrl(value: String) = updateConfig { it.copy(chatBaseUrl = value) }
+    fun setChatModel(value: String) = updateConfig { it.copy(chatModel = value) }
+    fun setSearchUrl(value: String) = updateConfig { it.copy(searchUrl = value) }
     fun setWorkflow(value: String) = updateConfig { it.copy(workflowJson = value) }
     fun setApiKey(value: String) { _state.value = _state.value.copy(apiKey = value, error = null) }
+    fun setChatApiKey(value: String) { _state.value = _state.value.copy(chatApiKey = value, error = null) }
     fun setPrompt(value: String) { _state.value = _state.value.copy(prompt = value, error = null) }
     fun setMode(value: CreateMode) { _state.value = _state.value.copy(mode = value, error = null) }
+    fun setChatDraft(value: String) { _state.value = _state.value.copy(chatDraft = value, error = null) }
 
     fun saveEngine() {
         if (_state.value.busy) return
@@ -84,6 +112,7 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
                 validateEngine(current.config)
                 withContext(Dispatchers.IO) {
                     secretStore.save(current.apiKey)
+                    secretStore.save(current.chatApiKey, "chat")
                     configStore.save(current.config)
                 }
                 _state.value = _state.value.copy(status = "Motor salvo com segurança.", error = null)
@@ -120,13 +149,20 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun importImage(uri: Uri) {
+    fun importImage(uri: Uri, slot: Int) {
         viewModelScope.launch {
             try {
+                require(slot in 0 until MAX_REFERENCE_IMAGES) { "Posição de imagem inválida." }
+                require(slot == 0 || _state.value.inputImages[0] != null) {
+                    "Adicione a primeira imagem antes da segunda referência."
+                }
                 val file = withContext(Dispatchers.IO) { library.importImage(uri) }
+                val images = _state.value.inputImages.toMutableList()
+                while (images.size <= slot) images.add(null)
+                images[slot] = file.absolutePath
                 _state.value = _state.value.copy(
-                    inputImage = file.absolutePath,
-                    status = "Imagem pronta para uso.",
+                    inputImages = images,
+                    status = "Imagem de referência pronta.",
                     error = null,
                 )
             } catch (error: Exception) {
@@ -135,8 +171,19 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun removeImage() {
-        _state.value = _state.value.copy(inputImage = null, status = null, error = null)
+    fun removeImage(slot: Int) {
+        _state.value = _state.value.copy(
+            inputImages = _state.value.inputImages.toMutableList().also { images ->
+                if (slot == 0 && images.getOrNull(1) != null) {
+                    images[0] = images[1]
+                    images[1] = null
+                } else if (slot in images.indices) {
+                    images[slot] = null
+                }
+            },
+            status = null,
+            error = null,
+        )
     }
 
     fun importWorkflow(content: String) {
@@ -163,10 +210,14 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 validateEngine(current.config)
                 require(current.prompt.isNotBlank()) { "Escreva uma descrição antes de criar." }
-                val input = current.inputImage?.let(::File)
+                val inputs = current.inputImages.filterNotNull().map(::File)
+                require(inputs.all(File::isFile)) { "Uma imagem de referência não está mais disponível." }
                 if (current.mode == CreateMode.EDIT || current.mode == CreateMode.IMAGE_TO_VIDEO) {
-                    require(input?.isFile == true) { "Escolha uma imagem de referência primeiro." }
+                    require(inputs.isNotEmpty()) {
+                        "Escolha ao menos uma imagem de referência primeiro."
+                    }
                 }
+                require(inputs.size <= MAX_REFERENCE_IMAGES) { "Use no máximo duas imagens de referência." }
                 _state.value = current.copy(busy = true, status = "Enviando para o motor…", error = null)
                 val result = withContext(Dispatchers.IO) {
                     engine.create(
@@ -174,7 +225,7 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
                         apiKey = current.apiKey,
                         mode = current.mode,
                         prompt = current.prompt,
-                        inputImage = input,
+                        inputImages = inputs,
                         save = library::save,
                     )
                 }
@@ -212,6 +263,60 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         _state.value = _state.value.copy(status = null, error = null)
     }
 
+    fun sendChatMessage() {
+        val current = _state.value
+        val message = current.chatDraft.trim()
+        if (current.chatBusy || message.isBlank()) return
+        val history = current.chatMessages
+        _state.value = current.copy(
+            chatDraft = "",
+            chatBusy = true,
+            chatMessages = history + ChatMessage("user", message),
+            pendingChatAction = null,
+            error = null,
+            status = null,
+        )
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    chatAssistant.reply(
+                        config = current.config,
+                        apiKey = current.chatApiKey.ifBlank { current.apiKey },
+                        history = history.map { ChatTurn(it.role, it.content) },
+                        userMessage = message,
+                    )
+                }
+                _state.value = _state.value.copy(
+                    chatMessages = _state.value.chatMessages + ChatMessage("assistant", result.response),
+                    pendingChatAction = result.pendingAction,
+                    status = if (result.pendingAction != null) "Ação pronta; confirme antes de enviar ao motor." else null,
+                    error = null,
+                )
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                report(error)
+            } finally {
+                _state.value = _state.value.copy(chatBusy = false)
+            }
+        }
+    }
+
+    fun confirmChatAction() {
+        val action = _state.value.pendingChatAction ?: return
+        _state.value = _state.value.copy(
+            pendingChatAction = null,
+            page = MainPage.CREATE,
+            prompt = action.prompt,
+            mode = action.mode,
+            status = "Ação do chat confirmada. Revise e toque em Criar para enviar.",
+            error = null,
+        )
+    }
+
+    fun dismissChatAction() {
+        _state.value = _state.value.copy(pendingChatAction = null, status = null)
+    }
+
     private fun refreshGallery() {
         viewModelScope.launch {
             try {
@@ -228,12 +333,10 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
         when (config.engine) {
             EngineKind.OPENAI_COMPATIBLE -> {
                 OpenAiEndpoint.parseBaseUrl(config.baseUrl)
-                require(config.model.isNotBlank()) { "Informe o ID do modelo de imagem." }
                 require(config.model.length <= 200) { "O ID do modelo é muito longo." }
             }
             EngineKind.COMFYUI -> {
                 EngineUrlPolicy.parse(config.baseUrl, "ComfyUI")
-                require(config.workflowJson.isNotBlank()) { "Importe um workflow ComfyUI nas configurações." }
             }
         }
     }
@@ -252,5 +355,6 @@ class CreateViewModel(application: Application) : AndroidViewModel(application) 
 
     private companion object {
         const val MAX_WORKFLOW_CHARS = 2 * 1024 * 1024
+        const val MAX_REFERENCE_IMAGES = 2
     }
 }
