@@ -61,6 +61,10 @@ This is a debug-signed build for testing, not a production release. Android may
 ask you to allow installation from your browser or file manager.
 SHA-256: `12a76d9814c1e8fdcab5cfc966e8661c8cc84bf7e511dbc56d9167dafd3ae294`
 
+To install it, download the APK on the phone, open it from Downloads, and
+confirm Android's installation prompt. If asked, allow your browser or file
+manager to install this test app.
+
 ## Scope and licensing
 
 The initial Android milestone implements the visual-creation shell and engine
